@@ -192,7 +192,7 @@ class OptimizationParams(ParamGroup):
         self.end_sample_pseudo: int = 9500
         self.lambda_pseudo_depth: float = 0.0
         self.num_pseudo_cams: int = 24
-        self.target_std: float = 64.0
+        self.target_std: float = 128.0  # Increased from 64.0 for large scenes
         
         # IDU (Iterative Dataset Update) parameters
         self._init_idu_params()
@@ -229,12 +229,12 @@ class OptimizationParams(ParamGroup):
         self.idu_refine: bool = False
         self.idu_random_ap: bool = False
         self.idu_iter_full_train: int = 0
-        self.idu_num_cams: int = 12
+        self.idu_num_cams: int = 16  # Increased from 12 for better coverage in large scenes
         self.idu_num_samples_per_view: int = 4
         self.idu_train_ratio: float = 0.5
         
         # Dataset configuration
-        self.datasets_type: str = "jax_v1"
+        self.datasets_type: str = "custom"
         self.idu_params: Dict[str, IDUParams] = {
             "jax_v1": IDUParams(
                 elevation_list=[85., 75., 65., 55., 45.],
@@ -245,6 +245,14 @@ class OptimizationParams(ParamGroup):
                 elevation_list=[85., 75., 65., 55., 45., 25.],
                 radius_list=[600., 600., 600., 600., 600.],
                 fov=20.0
+            ),
+            "custom": IDUParams(
+                #elevation_list=[85., 75., 65., 55., 45.],
+                elevation_list=[65., 55., 45.],
+                #radius_list=[800.0, 700.0, 650.0, 600.0, 550.0],
+                #radius_list=[1200.0, 1200.0, 1200.0, 1200.0, 1200.0],
+                radius_list=[1200.0, 1200.0, 1200.0],
+                fov=45.0
             )
         }
         
@@ -253,9 +261,10 @@ class OptimizationParams(ParamGroup):
         self.idu_render_size: int = 1024
         
         # Look-at point grid
-        self.idu_grid_width: int = 256
-        self.idu_grid_height: int = 256
-        self.idu_grid_size: int = 2
+        # For large scenes (1.3-1.7km), increase grid size to cover larger area
+        self.idu_grid_width: int = 2800  # Increased from 256 for large scenes
+        self.idu_grid_height: int = 2700  # Increased from 256 for large scenes
+        self.idu_grid_size: int = 5  # Increased from 2 for more target points (3x3=9 points)
     
     def _init_ddim_params(self):
         """Initialize DDIM inversion parameters."""

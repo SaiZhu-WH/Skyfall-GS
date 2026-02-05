@@ -10,6 +10,8 @@
 #
 
 import os
+# 在第12行 import os 之后，添加：
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 import numpy as np
 import torch
 import random
@@ -247,7 +249,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 # sample elevation from 80 to 45
                 elevation = (opt.end_sample_pseudo - iteration) / (opt.end_sample_pseudo - opt.start_sample_pseudo) * (80 - 45) + 45
                 # For Satellite
-                radius = (opt.end_sample_pseudo - iteration) / (opt.end_sample_pseudo - opt.start_sample_pseudo) * (300 - 250) + 250
+                radius = (opt.end_sample_pseudo - iteration) / (opt.end_sample_pseudo - opt.start_sample_pseudo) * (2500 - 2000) + 2000
                 # For GES
                 # radius = (opt.end_sample_pseudo - iteration) / (opt.end_sample_pseudo - opt.start_sample_pseudo) * (100 - 50) + 50
                 pseudo_stack = generate_pseudo_cams(dataset, opt.num_pseudo_cams, num_train_cams, elevation, radius, target_std=opt.target_std)
@@ -338,6 +340,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
+
+            # 修改
+            if iteration == 3000 or iteration == 20000:
+                print(f"\n[ITER {iteration}] 达到最终迭代，开始墙体注射...")
+                gaussians.inject_edge_wall_gaussians(z_threshold=150.0, lower_bound_ratio=0.2)
+                
+                # --- 新增：注射后立即重新计算 3D 过滤器 ---
+                # 这会根据训练相机视角重新填充 filter_3D，确保维度正确且几何属性合理
+                gaussians.compute_3D_filter(cameras=scene.getTrainCameras())
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
@@ -802,13 +813,15 @@ def training_idu_episode(
             if not pseudo_stack:
                 # sample elevation from 80 to 45
                 elevation = (first_iter + opt.idu_episode_iterations - iteration) / opt.idu_episode_iterations * (85 - 45) + 45
-                # radius = (first_iter + opt.idu_episode_iterations - iteration) / opt.idu_episode_iterations * (300 - 250) + 250
-                radius = (first_iter + opt.idu_episode_iterations - iteration) / opt.idu_episode_iterations * (150 - 75) + 75  # For GES
+                # For Satellite/Custom
+                radius = (first_iter + opt.idu_episode_iterations - iteration) / opt.idu_episode_iterations * (2500 - 1000) + 1000
+                # For GES
+                # radius = (first_iter + opt.idu_episode_iterations - iteration) / opt.idu_episode_iterations * (150 - 75) + 75  # For GES
 
                 pseudo_stack = generate_pseudo_cams(dataset, opt.num_pseudo_cams, num_train_cams, elevation, radius)
             
             pseudo_cam = pseudo_stack.pop(randint(0, len(pseudo_stack) - 1))
-            render_pkg = render(
+            render_pkg_pseudo = render(
                 pseudo_cam, 
                 gaussians, 
                 pipe, 
@@ -816,7 +829,7 @@ def training_idu_episode(
                 kernel_size=dataset.kernel_size, 
                 subpixel_offset=subpixel_offset
             )
-            render_image, render_depth = render_pkg["render"], render_pkg["render_depth"]
+            render_image, render_depth = render_pkg_pseudo["render"], render_pkg_pseudo["render_depth"]
             
             render_image_pil = to_pil_image(render_image)
             moge_depth = moge_standalone.run([render_image_pil], pbar=False)[0]
@@ -830,6 +843,10 @@ def training_idu_episode(
                 loss_scale = 1.0
                 loss += loss_scale * opt.lambda_pseudo_depth * depth_loss_pseudo
                 depth_loss += depth_loss_pseudo
+
+            del render_pkg_pseudo
+            del render_image,moge_depth
+            torch.cuda.empty_cache()
         
         opacity_loss = 0.0
         if opt.lambda_opacity > 0:
@@ -843,6 +860,8 @@ def training_idu_episode(
                 loss = opt.lambda_opacity * opacity_loss
 
         loss.backward()
+
+        torch.cuda.empty_cache()
 
         iter_end.record()
 
@@ -889,6 +908,7 @@ def training_idu_episode(
                     # size_threshold = None
                     gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
                     gaussians.compute_3D_filter(cameras=trainCameras + trainIDUCameras)
+                    torch.cuda.empty_cache()
 
                 if (iteration % opt.opacity_reset_interval == 0 and iteration < opt.iterations - 100) or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
@@ -905,6 +925,8 @@ def training_idu_episode(
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
+                if iteration % 10 == 0:
+                    torch.cuda.empty_cache()
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))

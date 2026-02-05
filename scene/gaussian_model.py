@@ -789,3 +789,170 @@ class GaussianModel:
         else:
             print(f"No points found outside radius {radius} to prune by opacity.")
         
+    # 在 scene/gaussian_model.py 中添加以下方法
+    def inject_edge_wall_gaussians(self, z_threshold, grid_res=2.0, lower_bound_ratio=0.3, num_per_pillar=14, subsample_rate=0.6):
+        """
+        通过在屋顶边缘注入高不透明度、垂直拉伸的高斯点来强化建筑立面。
+
+        参数:
+        z_threshold: 高度阈值，用于识别屋顶。
+        grid_res: 网格分辨率，建议 2.0，配合大 Scaling 覆盖面广。
+        lower_bound_ratio: 墙体延伸到底部的比例 (0.2 表示延伸到 20% 高度处)。
+        num_per_pillar: 每根柱子上的点数，增加到 25 以确保垂直方向无缝隙。
+        subsample_rate: 抽样率，建议 0.5-0.6，提高水平方向的密度。
+        """
+        import torch
+        import torch.nn.functional as F
+
+        with torch.no_grad():
+            # 1. 提取屋顶区域点云
+            xyz = self.get_xyz.detach()
+            roof_mask = xyz[:, 2] > z_threshold
+            roof_xyz = xyz[roof_mask]
+            
+            if roof_xyz.shape[0] == 0:
+                print("未找到高于阈值的屋顶点，取消注射。")
+                return
+
+            # 2. 建立 2D 占据网格并进行形态学闭合填充
+            x_min, y_min = roof_xyz[:, :2].min(dim=0).values
+            coords = ((roof_xyz[:, :2] - x_min) / grid_res).long()
+            W, H = coords[:, 0].max() + 1, coords[:, 1].max() + 1
+            grid = torch.zeros((W, H), device="cuda", dtype=torch.float32)
+            grid[coords[:, 0], coords[:, 1]] = 1.0
+            grid = grid.unsqueeze(0).unsqueeze(0) # [1, 1, W, H]
+
+            # 形态学闭合：先膨胀后腐蚀，消除屋顶内部的小空洞
+            kernel_size = 3
+            padding = kernel_size // 2
+            grid_ = grid
+            if grid_.dim() == 2:
+                grid_ = grid_.unsqueeze(0).unsqueeze(0) # [1,1,H,W]
+            grid_dilated = F.max_pool2d(
+                grid_, kernel_size=kernel_size, stride=1, padding=padding
+            )
+            grid_filled = 1.0 - F.max_pool2d(
+                1.0 - grid_dilated, kernel_size=kernel_size, stride=1, padding=padding
+            )
+            # =========================
+            # 2. 计算 4-邻域邻居数（在 grid_filled 上）
+            # =========================
+            neighbor_kernel = torch.tensor(
+                [[0, 1, 0],
+                [1, 0, 1],
+                [0, 1, 0]],
+                device=grid.device,
+                dtype=grid.dtype
+            ).unsqueeze(0).unsqueeze(0)
+
+            neighbor_count = F.conv2d(
+                grid_filled, neighbor_kernel, padding=1
+            ).squeeze()  # [H, W]
+
+            grid_filled_2d = grid_filled.squeeze()
+            grid_2d = grid_.squeeze()
+
+            edge_outer = (grid_filled_2d > 0.5) & (neighbor_count < 4)
+            edge_inner = (grid_2d > 0.5) & (neighbor_count < 4)
+            inner_dilated = F.max_pool2d(
+                edge_inner.float().unsqueeze(0).unsqueeze(0),
+                kernel_size=3,
+                stride=1,
+                padding=1
+            ).squeeze() > 0.5
+
+            edge_refined = edge_outer & inner_dilated
+            edge_mask_in_roof = edge_refined[
+                coords[:, 0],
+                coords[:, 1]
+             ]
+
+            # 4. 二次抽样：控制水平方向的柱子密度
+            subsample_mask = torch.rand(edge_mask_in_roof.shape, device="cuda") < subsample_rate
+            final_edge_mask = edge_mask_in_roof & subsample_mask
+
+            edge_xyz = roof_xyz[final_edge_mask]
+            if edge_xyz.shape[0] == 0:
+                return
+
+            # 5. 生成垂直插柱点
+            new_xyz_list = []
+            drop_range = 1.0 - lower_bound_ratio
+            for i in range(1, num_per_pillar + 1):
+                alpha = i / (num_per_pillar + 1)
+                temp_xyz = edge_xyz.clone()
+                # 垂直向下延伸高度
+                temp_xyz[:, 2] = edge_xyz[:, 2] * (1.0 - alpha * drop_range)
+                new_xyz_list.append(temp_xyz)
+            
+            new_xyz = torch.cat(new_xyz_list, dim=0)
+            num_new_points = new_xyz.shape[0]
+
+            # 6. 设置新点的属性 (颜色、透明度、拉伸比例)
+            # 颜色：继承屋顶边缘点的颜色
+            avg_dc = self._features_dc[roof_mask][final_edge_mask].repeat(num_per_pillar, 1, 1)
+            new_features_rest = torch.zeros((num_new_points, 3, (self.max_sh_degree + 1) ** 2 - 1), device="cuda")
+            
+            # 不透明度：设置为 0.9 强化视觉存在感，避免被扩散模型抹除
+            new_opacities = self.inverse_opacity_activation(torch.ones((num_new_points, 1), device="cuda") * 0.9)
+
+            # Scaling：各项异性拉伸 (对数空间)
+            # 水平方向 (X,Y) 设置为 -0.5 (约 0.6m 半径)
+            # 垂直方向 (Z) 设置为 0.5 (约 1.65m 半径)，确保垂直方向连续重叠
+            new_scaling = torch.ones((num_new_points, 3), device="cuda")
+            new_scaling[:, 0:2] = 0.5
+            new_scaling[:, 2] = 1.0
+            
+            new_rotation = torch.zeros((num_new_points, 4), device="cuda")
+            new_rotation[:, 0] = 1 # 默认无旋转
+
+            # 7. 拼接张量到优化器并更新模型属性
+            d = { "xyz": new_xyz, "f_dc": avg_dc, "f_rest": new_features_rest.transpose(1, 2),
+                "opacity": new_opacities, "scaling": new_scaling, "rotation": new_rotation }
+            
+            if self.appearance_enabled:
+                d["embeddings"] = self._embeddings[roof_mask][final_edge_mask].repeat(num_per_pillar, 1)
+
+            optimizable_tensors = self.cat_tensors_to_optimizer(d)
+            self._xyz = optimizable_tensors["xyz"]
+            self._features_dc = optimizable_tensors["f_dc"]
+            self._features_rest = optimizable_tensors["f_rest"]
+            self._opacity = optimizable_tensors["opacity"]
+            self._scaling = optimizable_tensors["scaling"]
+            self._rotation = optimizable_tensors["rotation"]
+            if self.appearance_enabled:
+                self._embeddings = optimizable_tensors["embeddings"]
+            
+            # 8. 同步更新所有元数据张量，防止 IndexError 和维度不匹配报错
+
+            # 同步 filter_3D
+            if hasattr(self, "filter_3D") and self.filter_3D is not None:
+                new_filter_3D = torch.zeros((num_new_points, 1), device="cuda")
+                self.filter_3D = torch.cat((self.filter_3D, new_filter_3D), dim=0)
+
+            # 同步 max_radii2D
+            if hasattr(self, "max_radii2D"):
+                new_max_radii2D = torch.zeros(num_new_points, device="cuda")
+                self.max_radii2D = torch.cat((self.max_radii2D, new_max_radii2D), dim=0)
+
+            # 同步密化梯度统计量 (只处理 xyz_gradient_accum)
+            if hasattr(self, "xyz_gradient_accum"):
+                new_grad_accum = torch.zeros((num_new_points, 1), device="cuda")
+                self.xyz_gradient_accum = torch.cat((self.xyz_gradient_accum, new_grad_accum), dim=0)
+            
+            # 同步 Skyfall-GS 特有统计量
+            if hasattr(self, "xyz_gradient_accum_abs"):
+                new_grad_accum_abs = torch.zeros((num_new_points, 1), device="cuda")
+                self.xyz_gradient_accum_abs = torch.cat((self.xyz_gradient_accum_abs, new_grad_accum_abs), dim=0)
+
+            if hasattr(self, "xyz_gradient_accum_abs_max"):
+                new_grad_accum_abs_max = torch.zeros((num_new_points, 1), device="cuda")
+                self.xyz_gradient_accum_abs_max = torch.cat((self.xyz_gradient_accum_abs_max, new_grad_accum_abs_max), dim=0)
+
+            # 同步分母统计量 (最后且只执行一次)
+            if hasattr(self, "denom"):
+                new_denom = torch.zeros((num_new_points, 1), device="cuda")
+                self.denom = torch.cat((self.denom, new_denom), dim=0)
+
+            print(f"注射完成：成功同步更新了所有追踪张量。")
+            print(f"注射完成：通过抽样 ({subsample_rate}) 共注入了 {num_new_points} 个高斯点。")
