@@ -790,7 +790,7 @@ class GaussianModel:
             print(f"No points found outside radius {radius} to prune by opacity.")
         
     # 在 scene/gaussian_model.py 中添加以下方法
-    def inject_edge_wall_gaussians(self, z_threshold, grid_res=2.0, lower_bound_ratio=0.3, num_per_pillar=14, subsample_rate=0.6):
+    def inject_edge_wall_gaussians(self, z_threshold, grid_res=2.0, lower_bound_ratio=0.3, num_per_pillar=20, subsample_rate=0.8):
         """
         通过在屋顶边缘注入高不透明度、垂直拉伸的高斯点来强化建筑立面。
 

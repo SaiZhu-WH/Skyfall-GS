@@ -340,7 +340,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
-
+            
             # 修改
             if iteration == 3000 or iteration == 20000:
                 print(f"\n[ITER {iteration}] 达到最终迭代，开始墙体注射...")
@@ -349,6 +349,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 # --- 新增：注射后立即重新计算 3D 过滤器 ---
                 # 这会根据训练相机视角重新填充 filter_3D，确保维度正确且几何属性合理
                 gaussians.compute_3D_filter(cameras=scene.getTrainCameras())
+                gaussians.optimizer.zero_grad(set_to_none = True)
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
