@@ -248,10 +248,10 @@ class OptimizationParams(ParamGroup):
             ),
             "custom": IDUParams(
                 #elevation_list=[85., 75., 65., 55., 45.],
-                elevation_list=[65., 55., 45.,25.],
+                elevation_list=[85., 75., 65., 55., 45.,25.],
                 #radius_list=[800.0, 700.0, 650.0, 600.0, 550.0],
                 #radius_list=[1200.0, 1200.0, 1200.0, 1200.0, 1200.0],
-                radius_list=[1200.0, 1200.0, 1200.0,1200.0],
+                radius_list=[1200.0, 1200.0, 1200.0, 1200.0, 1200.0,1200.0],
                 fov=40.0
             )
         }
