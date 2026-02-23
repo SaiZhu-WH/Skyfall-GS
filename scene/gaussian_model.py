@@ -790,7 +790,7 @@ class GaussianModel:
             print(f"No points found outside radius {radius} to prune by opacity.")
         
     # 在 scene/gaussian_model.py 中添加以下方法
-    def inject_edge_wall_gaussians(self, z_threshold, grid_res=2.0, lower_bound_ratio=0.3, num_per_pillar=20, subsample_rate=0.8):
+    def inject_edge_wall_gaussians(self, z_threshold, grid_res=2.0, lower_bound_ratio=0.1, num_per_pillar=25, subsample_rate=0.7):
         """
         通过在屋顶边缘注入高不透明度、垂直拉伸的高斯点来强化建筑立面。
 
@@ -900,8 +900,8 @@ class GaussianModel:
             # 水平方向 (X,Y) 设置为 -0.5 (约 0.6m 半径)
             # 垂直方向 (Z) 设置为 0.5 (约 1.65m 半径)，确保垂直方向连续重叠
             new_scaling = torch.ones((num_new_points, 3), device="cuda")
-            new_scaling[:, 0:2] = 0.5
-            new_scaling[:, 2] = 1.0
+            new_scaling[:, 0:2] = 0.0
+            new_scaling[:, 2] = 1.2
             
             new_rotation = torch.zeros((num_new_points, 4), device="cuda")
             new_rotation[:, 0] = 1 # 默认无旋转
