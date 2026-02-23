@@ -534,7 +534,7 @@ def generate_idu_training_set(
     del gaussians
     torch.cuda.empty_cache()
 
-    return final_cam_lists
+    return final_idu_cam_infos,final_cam_lists
 
 @torch.no_grad()
 def generate_pseudo_cams(
@@ -592,7 +592,8 @@ def training_idu_episode(
         dataset, opt, pipe, 
         checkpoint_path,
         targets, elevation, radius, fov,
-        idu_num_cams, idu_num_samples_per_view
+        idu_num_cams, idu_num_samples_per_view,
+        cached_cam_infos=None  # <--- 新增这一行
     ):
     # NOTE: generate pose -> render frame -> refined using DiffusionSat -> use MoGe to predict monocular depth
     if opt.use_lpips_loss:
@@ -614,7 +615,7 @@ def training_idu_episode(
     if opt.idu_refine and not opt.idu_use_flow_edit and not opt.idu_use_difix3d and not opt.idu_use_dreamscene:
         print("Warning: Refinement is enabled but no refinement method is selected. Defaulting to FlowEdit.")
         opt.idu_use_flow_edit = True
-
+    '''
     idu_cam_list = generate_idu_training_set(
         dataset,
         checkpoint_path,
@@ -630,6 +631,28 @@ def training_idu_episode(
         use_dreamscene=opt.idu_use_dreamscene, use_sd21=opt.idu_use_sd21,
         refine=opt.idu_refine, idu_no_curriculum=opt.idu_no_curriculum, idu_random_ap=opt.idu_random_ap
     )
+    '''
+    # 2. 判断是否有缓存，如果有则直接跳过扩散模型和深度估计步骤
+    if cached_cam_infos is None:
+        idu_cam_infos,idu_cam_list = generate_idu_training_set(
+            dataset,
+            checkpoint_path,
+            pipe,
+            targets, elevation, radius, idu_num_cams, idu_num_samples_per_view, height=opt.idu_render_size, width=opt.idu_render_size, fov_x=fov, # GES: fov_x = 20.0, satellite: 60.0
+            num_steps=opt.idu_ddim_step, strength=opt.idu_ddim_strength,
+            guidance_scale=opt.idu_ddim_guidance_scale, eta=opt.idu_ddim_eta,
+            use_flow_edit=opt.idu_use_flow_edit, flow_edit_n_min=opt.idu_flow_edit_n_min, flow_edit_n_max=opt.idu_flow_edit_n_max, flow_edit_n_max_end=opt.idu_flow_edit_n_max_end, flow_edit_n_avg=opt.idu_flow_edit_n_avg,
+            model_type=opt.idu_model_type,
+            use_difix3d=opt.idu_use_difix3d, difix3d_model=opt.idu_difix3d_model, difix3d_steps=opt.idu_difix3d_steps,
+            difix3d_guidance=opt.idu_difix3d_guidance, difix3d_timesteps=opt.idu_difix3d_timesteps, 
+            difix3d_use_reference=opt.idu_difix3d_use_reference, difix3d_prompt=opt.idu_difix3d_prompt,
+            use_dreamscene=opt.idu_use_dreamscene, use_sd21=opt.idu_use_sd21,
+            refine=opt.idu_refine, idu_no_curriculum=opt.idu_no_curriculum, idu_random_ap=opt.idu_random_ap
+        )
+    else:
+        print(f"\n[CACHE HIT] 命中缓存！正在复用 Elevation {elevation}, Radius {radius} 的伪真值，跳过生成步骤...")
+        idu_cam_infos = cached_cam_infos
+        idu_cam_list = cameraList_from_camInfos(idu_cam_infos, 1, dataset, is_idu=True, is_pseudo_cam=opt.idu_random_ap)
 
     # load Gaussians and scene
     tb_writer = prepare_output_and_logger(dataset)
@@ -935,8 +958,13 @@ def training_idu_episode(
                 torch.save((gaussians.capture(), iteration), checkpoint_path)
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
+
+    # 🚨 3. 新增：强制清空当前阶段的所有显存占用，防止 OOM
+    del scene
+    del gaussians
+    torch.cuda.empty_cache()
                 
-    return checkpoint_path
+    return checkpoint_path, idu_cam_infos
 
 def training_idu(dataset, opt, pipe, init_checkpoint_path):
     start_checkpoint_path = init_checkpoint_path
@@ -963,24 +991,41 @@ def training_idu(dataset, opt, pipe, init_checkpoint_path):
     xx, yy = np.meshgrid(x, y)
     targets = np.stack([xx, yy, np.zeros_like(xx)], axis=-1).reshape(-1, 3).tolist()
     assert len(targets) == opt.idu_grid_size * opt.idu_grid_size
+
+    # ================= 新增：初始化内存缓存字典 =================
+    idu_cache = {} 
+    # ========================================================
+
     if not opt.idu_no_curriculum:
         
         for radius, elevation in zip(opt.idu_radius_list, opt.idu_elevation_list):
             print(f"Training IDU episode with elevation {elevation} and radius {radius}")
             print(f"# of IDU targets: {len(targets)}")
-            start_checkpoint_path = training_idu_episode(
+
+            # ===== 新增：尝试读取缓存 =====
+            cache_key = (elevation, radius)
+            current_cache = idu_cache.get(cache_key, None)
+            # ==============================
+
+            start_checkpoint_path, generated_cam_infos= training_idu_episode(
                 dataset, opt, pipe, 
                 checkpoint_path=start_checkpoint_path,
                 targets=targets, elevation=elevation, radius=radius, fov=opt.idu_fov,
                 idu_num_cams=opt.idu_num_cams,
-                idu_num_samples_per_view=opt.idu_num_samples_per_view
+                idu_num_samples_per_view=opt.idu_num_samples_per_view,
+                cached_cam_infos=current_cache # <--- 传入缓存
             )
+
+            # ===== 新增：写入缓存 =====
+            if current_cache is None:
+                idu_cache[cache_key] = generated_cam_infos
+            # ==========================
     else:
         print("===== Disable IDU curriculum learning =====")
         assert opt.idu_episode_iterations == 10000, "IDU episode iterations should be 10000"
         assert opt.idu_densify_until_iter == 9000, "IDU episode iterations should be 9000"
         for _ in range(5):
-            start_checkpoint_path = training_idu_episode(
+            start_checkpoint_path, _ = training_idu_episode(
                 dataset, opt, pipe, 
                 checkpoint_path=start_checkpoint_path,
                 targets=targets, elevation=opt.idu_elevation_list, radius=opt.idu_radius_list, fov=opt.idu_fov,
