@@ -342,8 +342,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 gaussians.optimizer.zero_grad(set_to_none = True)
             
             # 修改
-            if iteration == 3000 or iteration == 20000:
-                print(f"\n[ITER {iteration}] 达到最终迭代，开始墙体注射...")
+            if iteration == 3000 or iteration == 12000:
+                print(f"\n[ITER {iteration}] 达到迭代，开始墙体注射...")
                 gaussians.inject_edge_wall_gaussians(z_threshold=150.0, lower_bound_ratio=0.2)
                 
                 # --- 新增：注射后立即重新计算 3D 过滤器 ---
@@ -1022,8 +1022,8 @@ def training_idu(dataset, opt, pipe, init_checkpoint_path):
             # ==========================
     else:
         print("===== Disable IDU curriculum learning =====")
-        assert opt.idu_episode_iterations == 10000, "IDU episode iterations should be 10000"
-        assert opt.idu_densify_until_iter == 9000, "IDU episode iterations should be 9000"
+        assert opt.idu_episode_iterations == 5000, "IDU episode iterations should be 10000"
+        assert opt.idu_densify_until_iter == 4000, "IDU episode iterations should be 9000"
         for _ in range(5):
             start_checkpoint_path, _ = training_idu_episode(
                 dataset, opt, pipe, 

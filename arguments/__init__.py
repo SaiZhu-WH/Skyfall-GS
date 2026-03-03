@@ -141,8 +141,8 @@ class OptimizationParams(ParamGroup):
     """Parameters for optimization and training."""
     
     # Constants
-    DEFAULT_ITERATIONS = 30_000
-    DEFAULT_DENSIFY_UNTIL = 20_000
+    DEFAULT_ITERATIONS = 15_000
+    DEFAULT_DENSIFY_UNTIL = 10_000
     
     def __init__(self, parser: ArgumentParser):
         # Basic training parameters
@@ -219,11 +219,11 @@ class OptimizationParams(ParamGroup):
         """Initialize IDU-specific parameters."""
         # Basic IDU settings
         self.idu_no_curriculum: bool = False
-        self.idu_episode_iterations: int = 10000
-        self.idu_densify_until_iter: int = 7500
-        self.idu_opacity_reset_interval: int = 5000
-        self.idu_opacity_cooling_iterations: int = 1000
-        self.idu_testing_interval: int = 5000  # idu_episode_iterations // 2
+        self.idu_episode_iterations: int = 5000
+        self.idu_densify_until_iter: int = 4000
+        self.idu_opacity_reset_interval: int = 2500
+        self.idu_opacity_cooling_iterations: int = 750
+        self.idu_testing_interval: int = 2500  # idu_episode_iterations // 2
         
         # IDU refinement
         self.idu_refine: bool = False
@@ -247,11 +247,11 @@ class OptimizationParams(ParamGroup):
                 fov=20.0
             ),
             "custom": IDUParams(
-                #elevation_list=[ 45., 25.],
+                #elevation_list=[ 30.],
                 elevation_list=[80.,72.,58.,45.,45.,30.],
                 #radius_list=[800.0, 700.0, 650.0, 600.0, 550.0],
-                #radius_list=[1000.0, 1000.0],
-                radius_list=[1200.0,1200.0,1200.0,1200.0,1200.0,1200.0],
+                #radius_list=[800.0],
+                radius_list=[1200.0,1200.0,1200.0,1000.0,1000.0,800.0],
                 fov=40.0
             )
         }
